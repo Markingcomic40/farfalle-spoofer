@@ -6,7 +6,7 @@ import os
 from scapy.layers.inet import IP
 
 # from modules.arp_spoofer import ARPSpoofer
-# from modules.dns_spoofer import DNSSpoofer
+from modules.dns_spoofer import DNSSpoofer
 # from modules.ssl_stripper import SSLStripper
 from utils.network_scanner import NetworkScanner
 from utils.packet_handler import PacketHandler

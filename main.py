@@ -44,8 +44,9 @@ class FarfallePoisoner:
             logging.getLogger().setLevel(logging.DEBUG)
 
         # Initialize components
+        forward_packets = self.mode in ['arp', 'ssl', 'all']
         self.scanner = NetworkScanner(self.interface)
-        self.packet_handler = PacketHandler(self.interface, self.gateway_ip)
+        self.packet_handler = PacketHandler(self.interface, self.gateway_ip, forward_packets=forward_packets)
 
         if self.verbose:
             targets = {

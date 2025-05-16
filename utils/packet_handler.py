@@ -14,13 +14,14 @@ class PacketHandler:
     Handles packet interception and forwarding
     """
 
-    def __init__(self, interface, gateway_ip):
+    def __init__(self, interface, gateway_ip, forward_packets=True):
         self.interface = interface
         self.gateway_ip = gateway_ip
         self.gateway_mac = self._resolve_mac(gateway_ip)
         self.filters = []
         self.running = False
         self.sniffer_thread = None
+        self.forward_packets = forward_packets
 
     def _resolve_mac(self, ip):
         """ARP-ping the gateway to learn its MAC."""
@@ -55,7 +56,7 @@ class PacketHandler:
                 return
 
         # MITM
-        if IP in packet:
+        if self.forward_packets and IP in packet:
             try:
                 del packet[IP].chksum
                 if TCP in packet:

@@ -8,7 +8,7 @@ from scapy.layers.inet import IP
 
 # Import our modules
 from modules.arp_spoofer import ARPSpoofer
-from modules.ssl_stripper import SSLStripper
+#from modules.ssl_stripper import SSLStripper
 from utils.network_scanner import NetworkScanner
 from utils.packet_handler import PacketHandler
 

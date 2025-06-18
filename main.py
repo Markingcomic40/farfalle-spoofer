@@ -88,9 +88,13 @@ class FarfallePoisoner:
                 sys.exit(1)
 
         if self.mode in ['dns', 'all']:
-            # Parse DNS mapping if provided
             dns_mapping = {}
-            if hasattr(self.args, 'dns_domains') and self.args.dns_domains:
+            if self.args.dns_mapping:
+                for entry in self.args.dns_mapping.split(','):
+                    if ':' in entry:
+                        domain, ip = entry.split(':', 1)
+                        dns_mapping[domain.strip()] = ip.strip()
+            elif hasattr(self.args, 'dns_domains') and self.args.dns_domains:
                 for domain in self.args.dns_domains:
                     dns_mapping[domain] = None  # Will use attacker IP
 
@@ -131,7 +135,9 @@ class FarfallePoisoner:
         parser.add_argument('--scan', action='store_true',
                             help='Scan network for hosts before starting')
         parser.add_argument('--dns-domains', nargs='+',
-                            help='Additional domains to spoof (e.g., --dns-domains example.com test.com)')
+                            help='Additional domains to spoof')
+        parser.add_argument('-d', '--dns-mapping', type=str,
+                            help='Comma-separated list of domain:ip pairs')
 
         return parser.parse_args()
 

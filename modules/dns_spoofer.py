@@ -1,5 +1,5 @@
 import logging
-from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, send
+from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, send, get_if_addr
 import threading
 import time
 
@@ -46,20 +46,29 @@ class DNSSpoofer:
 
     # TODO: rip DRY
     def _get_interface_ip(self):
-        """Get IP address of our interface"""
-        import subprocess
         try:
-            result = subprocess.run(
-                f"ifconfig {self.interface} | grep 'inet ' | awk '{{print $2}}' | head -1",
-                shell=True, capture_output=True, text=True
-            )
-            ip = result.stdout.strip()
-
-            if 'addr:' in ip:
-                ip = ip.split('addr:')[1]
-            return ip if ip else None
-        except Exception as e:
-            logger.error(f"Could not get interface IP: {e}")
+            return get_if_addr(self.interface)
+        except Exception:
+            import socket
+            import fcntl
+            import struct
+            import platform
+            if platform.system() in ("Linux", "Darwin"):
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                return socket.inet_ntoa(
+                    fcntl.ioctl(
+                        s.fileno(), 0x8915,  # SIOCGIFADDR
+                        struct.pack(
+                            '256s', self.interface[:15].encode('utf-8'))
+                    )[20:24]
+                )
+            elif platform.system() == "Windows":
+                import psutil
+                for name, addrs in psutil.net_if_addrs().items():
+                    if name == self.interface:
+                        for a in addrs:
+                            if a.family == socket.AF_INET:
+                                return a.address
             return None
 
     def start(self):

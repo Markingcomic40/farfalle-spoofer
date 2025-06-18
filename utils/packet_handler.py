@@ -1,7 +1,7 @@
 import logging
 from scapy.layers.l2 import Ether, ARP, getmacbyip
 from scapy.layers.inet import IP, TCP, UDP
-from scapy.all import *
+from scapy.all import *  # like f it lmfao
 import threading
 
 logger = logging.getLogger('PacketHandler')
@@ -47,16 +47,29 @@ class PacketHandler:
 
     # TODO: Pass this in as a param, little brittle the way it is rnow and doesnt work on windows
     def _get_interface_ip(self):
-        """Get IP address of our interface"""
-        import subprocess
         try:
-            result = subprocess.run(
-                f"ifconfig {self.interface} | grep 'inet ' | awk '{{print $2}}' | head -1",
-                shell=True, capture_output=True, text=True
-            )
-            ip = result.stdout.strip()
-            return ip if ip else None
-        except:
+            return get_if_addr(self.interface)
+        except Exception:
+            import socket
+            import fcntl
+            import struct
+            import platform
+            if platform.system() in ("Linux", "Darwin"):
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                return socket.inet_ntoa(
+                    fcntl.ioctl(
+                        s.fileno(), 0x8915,  # SIOCGIFADDR
+                        struct.pack(
+                            '256s', self.interface[:15].encode('utf-8'))
+                    )[20:24]
+                )
+            elif platform.system() == "Windows":
+                import psutil
+                for name, addrs in psutil.net_if_addrs().items():
+                    if name == self.interface:
+                        for a in addrs:
+                            if a.family == socket.AF_INET:
+                                return a.address
             return None
 
     def _resolve_mac(self, ip):

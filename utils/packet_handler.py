@@ -283,7 +283,7 @@ class PacketHandler:
         """Main sniffer loop"""
         try:
             # Build filter to avoid our own packets
-            filter_str = f"ip and ether src not {self.attacker_mac}"
+            filter_str = f"(ip or ip6) and ether src not {self.attacker_mac}"
 
             # Add target filter if specified
             if self.target_ips:

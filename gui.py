@@ -7,7 +7,6 @@ import io
 from datetime import datetime
 import subprocess
 
-# Import your main application
 from main import FarfallePoisoner
 
 class LogCapture(logging.Handler):
@@ -167,7 +166,7 @@ class FarfalleGUI:
                             font=('Arial', 8), foreground='gray')
         dns_help.grid(row=2, column=1, sticky=tk.W, padx=(10, 0))
         
-        # Options (verbose/silent)
+        # Options (verbose/silent/normal)
         options_frame = ttk.Frame(attack_frame)
         options_frame.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=(10, 0))
         
@@ -184,7 +183,7 @@ class FarfalleGUI:
         ttk.Radiobutton(output_frame, text="Silent", variable=self.output_var, 
                value="silent").grid(row=0, column=2)
 
-        # Control Buttons
+        # Attack control buttons
         control_frame = ttk.Frame(main_frame)
         control_frame.grid(row=3, column=0, columnspan=2, pady=(0, 10))
         
@@ -218,7 +217,7 @@ class FarfalleGUI:
         # Main banner container
         banner_container = ttk.Frame(parent_frame)
         
-        # Left side - Compact butterfly (smaller)
+        # Luis' majestic butterfly
         left_frame = ttk.Frame(banner_container)
         left_frame.pack(side=tk.LEFT, padx=(0, 20))
         
@@ -252,7 +251,7 @@ class FarfalleGUI:
         banner_widget.config(state=tk.DISABLED)
         banner_widget.pack()
     
-        # Right side - Title and info
+        # Title and info
         right_frame = ttk.Frame(banner_container)
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     
@@ -266,7 +265,7 @@ class FarfalleGUI:
                               font=('Arial', 12))
         subtitle_label.pack(anchor=tk.W, pady=(0, 5))
     
-        # Feature list
+        # Features list
         features_label = ttk.Label(right_frame, 
                               text="• ARP Poisoning  • DNS Spoofing  • SSL Stripping",
                               font=('Arial', 9), foreground='gray')
@@ -297,7 +296,7 @@ class FarfalleGUI:
                         suffix = " (IPv4+IPv6)" if has_ipv6 else " (IPv4)"
                         interfaces.append(interface_name + suffix)
             
-            # Set default based on common names
+            # Set default, kinda hardcoded sorry
             defaults = ["Ethernet 2", "eth0", "wlan0", "en0"]
             for default in defaults:
                 matching = [iface for iface in interfaces if default in iface]
@@ -308,7 +307,7 @@ class FarfalleGUI:
             if not self.interface_var.get() and interfaces:
                 self.interface_var.set(interfaces[0].split(' (')[0])
                 
-            # Check IPv6 support
+            # Check IPv6 support (idk if this'll work out)
             self.root.after(1000, self.check_ipv6_support)
             
         except Exception as e:
@@ -510,7 +509,7 @@ class FarfalleGUI:
                     args.append("--verbose")
                 elif output_level == "silent":
                     args.append("--silent")
-                # Normal mode adds neither flag
+                # (Normal mode adds neither flag)
                 
                 # Override sys.argv
                 original_argv = sys.argv[:]

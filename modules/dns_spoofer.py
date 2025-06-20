@@ -25,27 +25,65 @@ class DNSSpoofer:
         self.packet_handler = packet_handler
         self.running = False
         self.spoofed_count = 0
-        self.spoofed_count = 0
         self.verbose = verbose
 
         # Get our IP from the interface
         self.attacker_ip = self._get_interface_ip()
         self.attacker_ipv6 = self._get_interface_ipv6()
 
-        # Default domains to spoof (well this is just what im using for tests rnow)
-        self.spoof_domains = dns_mapping or {
-            'github.com': self.attacker_ip,
-            'www.github.com': self.attacker_ip,
-            'httpbin.org': self.attacker_ip,
-            'www.httpbin.org': self.attacker_ip,
-            'example.com': self.attacker_ip,
-            'www.example.com': self.attacker_ip,
-            'neverssl.com': self.attacker_ip,
-            'www.neverssl.com': self.attacker_ip,
-        }
+        self.spoof_domains = {}
+        
+        if dns_mapping:
+            # If dns_mapping is a dictionary, use it directly
+            if isinstance(dns_mapping, dict):
+                self.spoof_domains = dns_mapping.copy()
+            # If it's a list (from GUI), parse it
+            elif isinstance(dns_mapping, list):
+                for domain in dns_mapping:
+                    if isinstance(domain, str):
+                        if ':' in domain:
+                            # Format: "github.com:192.168.56.1"
+                            domain_name, ip = domain.split(':', 1)
+                            self.spoof_domains[domain_name.strip()] = ip.strip()
+                        else:
+                            # Format: "github.com" - use attacker IP
+                            self.spoof_domains[domain.strip()] = self.attacker_ip
+            # If it's a string (comma-separated), parse it
+            elif isinstance(dns_mapping, str):
+                domains = dns_mapping.split(',')
+                for domain in domains:
+                    domain = domain.strip()
+                    if domain:
+                        if ':' in domain:
+                            domain_name, ip = domain.split(':', 1)
+                            self.spoof_domains[domain_name.strip()] = ip.strip()
+                        else:
+                            self.spoof_domains[domain] = self.attacker_ip
+        
+        # If no mapping provided or empty, use defaults with attacker IP
+        if not self.spoof_domains:
+            self.spoof_domains = {
+                'github.com': self.attacker_ip,
+                'www.github.com': self.attacker_ip,
+                'httpbin.org': self.attacker_ip,
+                'www.httpbin.org': self.attacker_ip,
+                'example.com': self.attacker_ip,
+                'www.example.com': self.attacker_ip,
+                'neverssl.com': self.attacker_ip,
+                'www.neverssl.com': self.attacker_ip,
+            }
 
-        logger.info(
-            f"DNS Spoofer initialized - redirecting to {self.attacker_ip} (IPv4)")
+        # Ensure all domains point to valid IPs - if None, use attacker IP
+        for domain, ip in self.spoof_domains.items():
+            if ip is None:
+                self.spoof_domains[domain] = self.attacker_ip
+
+        logger.info(f"DNS Spoofer initialized - redirecting to {self.attacker_ip} (IPv4)")
+        
+        if self.verbose:
+            logger.info(f"DNS mappings configured:")
+            for domain, ip in self.spoof_domains.items():
+                logger.info(f"  {domain} -> {ip}")
 
         if self.attacker_ipv6:
             logger.info(f"IPv6 address: {self.attacker_ipv6}")

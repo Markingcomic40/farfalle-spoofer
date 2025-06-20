@@ -53,7 +53,7 @@ class FarfallePoisoner:
         self.dns_spoofer = None
         self.ssl_stripper = None
 
-        if self.mode in ['arp', 'all']:
+        if self.mode in ['arp', 'all', 'ssl']:
             try:
                 for target_ip in self.target_ips:
                     if ':' in target_ip:  # IPv6 address

@@ -33,9 +33,6 @@ class FarfallePoisoner:
     def __init__(self):
         self.args = self._parse_arguments()
         self.interface = self.args.interface
-        self.target_ips = self._parse_targets(self.args.target)
-        self.gateway_ip = self.args.gateway
-        self.mode = self.args.mode
         self.verbose = self.args.verbose
 
         if self.verbose:
@@ -45,13 +42,22 @@ class FarfallePoisoner:
 
         # Initialize components
         self.scanner = NetworkScanner(self.interface)
-        self.packet_handler = PacketHandler(
-            self.interface, self.gateway_ip, self.target_ips)
 
         self.arp_spoofers = {}  # mapahash
         self.ndp_spoofers = {}
         self.dns_spoofer = None
         self.ssl_stripper = None
+
+        if self.args.scan:
+            self.target_ips = []
+            return
+
+        self.target_ips = self._parse_targets(self.args.target)
+        self.gateway_ip = self.args.gateway
+        self.mode = self.args.mode
+
+        self.packet_handler = PacketHandler(
+            self.interface, self.gateway_ip, self.target_ips)
 
         if self.mode in ['arp', 'all', 'ssl']:
             try:
@@ -138,9 +144,9 @@ class FarfallePoisoner:
 
         parser.add_argument('-i', '--interface', required=True,
                             help='Network interface to use (e.g., eth0, wlan0, en0)')
-        parser.add_argument('-t', '--target', required=True,
+        parser.add_argument('-t', '--target', required=False,
                             help='Target IP(s) to poison. Supports: single IP (192.168.1.5), multiple IPs (192.168.1.5,192.168.1.6), or subnet (192.168.1.0/24)')
-        parser.add_argument('-g', '--gateway', required=True,
+        parser.add_argument('-g', '--gateway', required=False,
                             help='Gateway IP address')
         parser.add_argument('-m', '--mode', default='all',
                             choices=['arp', 'dns', 'ssl', 'all'],
@@ -162,7 +168,13 @@ class FarfallePoisoner:
         parser.add_argument('--dns-domains', nargs='+',
                             help='Additional domains to spoof (e.g., --dns-domains example.com test.com)')
 
-        return parser.parse_args()
+        args = parser.parse_args()
+
+        if not args.scan and (not args.target or not args.gateway):
+            parser.error(
+                "--target and --gateway are required unless --scan is used")
+
+        return args
 
     def _scan_network(self):
         """Scan network for available hosts"""

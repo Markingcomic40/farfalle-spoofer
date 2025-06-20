@@ -159,7 +159,3 @@ class ARPSpoofer:
 
         self._restore_arp()
         logger.info("ARP spoofing stopped")
-
-    def is_running(self):
-        """Check if ARP spoofing is active"""
-        return self.running

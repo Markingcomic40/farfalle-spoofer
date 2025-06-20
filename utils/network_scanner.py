@@ -4,9 +4,9 @@ import concurrent.futures
 from collections import defaultdict
 from scapy.layers.l2 import ARP, Ether
 from scapy.layers.inet import IP, TCP, UDP, ICMP
-from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest, ICMPv6ND_NA, ICMPv6NDOptSrcLLAddr
+from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest, ICMPv6ND_NA, ICMPv6NDOptSrcLLAddr, ICMPv6ND_NS
 from scapy.layers.dns import DNS, DNSQR
-from scapy.all import srp, sr1, sr, sniff, get_if_addr, get_if_hwaddr
+from scapy.all import srp, sr1, sr, sniff, get_if_addr, get_if_hwaddr, send
 
 
 logger = logging.getLogger('NetworkScanner')
@@ -142,13 +142,17 @@ class NetworkScanner:
             return []
 
     def _scan_ipv6_nd(self):
-        """Neighbor Discovery"""
         hosts = []
 
         try:
-            # Listen for Neighbor Advertisements
+            def is_nd_advertisement(pkt):
+                return (pkt.haslayer(IPv6) and
+                        pkt.haslayer(ICMPv6ND_NA) and
+                        pkt[IPv6].src != '::' and
+                        not pkt[IPv6].src.startswith('fe80'))
+
             def process_na(pkt):
-                if pkt.haslayer(ICMPv6ND_NA):
+                if is_nd_advertisement(pkt):
                     ipv6 = pkt[IPv6].src
                     mac = None
 
@@ -157,8 +161,12 @@ class NetworkScanner:
                     elif pkt.haslayer(Ether):
                         mac = pkt[Ether].src
 
-                    # Skip link-local
-                    if ipv6 and mac and not ipv6.startswith('fe80'):
+                    if ipv6 and mac:
+                        # Check if we already have this host
+                        for h in hosts:
+                            if h['ipv6'] == ipv6:
+                                return
+
                         hosts.append({
                             'ipv6': ipv6,
                             'mac': mac,
@@ -166,14 +174,136 @@ class NetworkScanner:
                             'type': 'IPv6 Host (ND)'
                         })
 
-            sniff(iface=self.interface, prn=process_na, timeout=3,
-                  filter="icmp6 and icmp6[0] = 136", store=0)
+            # First, send some Neighbor Solicitations to trigger responses
+            # Send to all-nodes multicast to discover hosts
+            ns_all = IPv6(dst="ff02::1") / ICMPv6ND_NS(tgt="ff02::1")
+            send(ns_all, iface=self.interface, verbose=0)
+
+            logger.info("Listening for IPv6 Neighbor Advertisements...")
+            sniff(iface=self.interface,
+                  prn=process_na,
+                  timeout=5,
+                  lfilter=is_nd_advertisement,
+                  store=0)
 
             return hosts
 
         except Exception as e:
             logger.error(f"Error in IPv6 ND scan: {e}")
+
+            try:
+                return self._scan_ipv6_active()
+            except:
+                return []
+
+    def _scan_ipv6_active(self):
+        hosts = []
+        found_macs = set()
+
+        try:
+            logger.info("Using active IPv6 discovery (multicast ping)...")
+
+            # Send IPv6 multicast echo request to all-nodes
+            # ff02::1 = all nodes, ff02::2 = all routers
+            for target in ["ff02::1", "ff02::2"]:
+                ping = IPv6(dst=target, hlim=255) / ICMPv6EchoRequest()
+
+                # Use sr instead of sr1 to get multiple responses
+                responses, _ = sr(ping, iface=self.interface,
+                                  timeout=3, verbose=0)
+
+                for sent, received in responses:
+                    if received.haslayer(IPv6):
+                        src_ip = received[IPv6].src
+
+                        # Skip link-local and loopback
+                        if src_ip.startswith('fe80') or src_ip == '::1':
+                            continue
+
+                        # Get MAC from Ether
+                        mac = None
+                        if received.haslayer(Ether):
+                            mac = received[Ether].src
+
+                        if mac and mac in found_macs:
+                            continue
+
+                        if mac:
+                            found_macs.add(mac)
+
+                        hosts.append({
+                            'ipv6': src_ip,
+                            'mac': mac,
+                            'vendor': self._get_mac_vendor(mac) if mac else 'Unknown',
+                            'type': 'IPv6 Host'
+                        })
+
+            # Also try to find hosts by checking the neighbor cache
+            neighbor_hosts = self._get_neighbor_cache()
+            for host in neighbor_hosts:
+                if host['mac'] not in found_macs:
+                    hosts.append(host)
+                    found_macs.add(host['mac'])
+
+            logger.info(f"Found {len(hosts)} IPv6 hosts via active discovery")
+            return hosts
+
+        except Exception as e:
+            logger.error(f"Error in active IPv6 scan: {e}")
             return []
+
+    def _get_neighbor_cache(self):
+        hosts = []
+
+        try:
+            import subprocess
+            import platform
+
+            if platform.system() == "Darwin":
+                cmd = ["ndp", "-an"]
+            elif platform.system() == "Linux":
+                cmd = ["ip", "-6", "neigh"]
+            else:
+                return []
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+
+                for line in lines:
+                    if platform.system() == "Darwin":
+                        parts = line.split()
+                        if len(parts) >= 3 and not parts[0].startswith('Neighbor'):
+                            ipv6 = parts[0]
+                            mac = parts[1]
+
+                            if not ipv6.startswith('fe80') and mac != '(incomplete)':
+                                hosts.append({
+                                    'ipv6': ipv6,
+                                    'mac': mac,
+                                    'vendor': self._get_mac_vendor(mac),
+                                    'type': 'IPv6 Host (cache)'
+                                })
+
+                    elif platform.system() == "Linux":
+                        if 'lladdr' in line and not line.startswith('fe80'):
+                            parts = line.split()
+                            ipv6 = parts[0]
+                            mac_idx = parts.index('lladdr') + 1
+                            if mac_idx < len(parts):
+                                mac = parts[mac_idx]
+                                hosts.append({
+                                    'ipv6': ipv6,
+                                    'mac': mac,
+                                    'vendor': self._get_mac_vendor(mac),
+                                    'type': 'IPv6 Host (cache)'
+                                })
+
+        except Exception as e:
+            logger.debug(f"Could not read neighbor cache: {e}")
+
+        return hosts
 
     def _scan_ports(self, ip, ports=None):
         """Scans some of the common ports on a host"""

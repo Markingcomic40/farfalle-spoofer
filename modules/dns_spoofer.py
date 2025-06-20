@@ -172,6 +172,25 @@ class DNSSpoofer:
     def _dns_filter(self, packet):
         """Process DNS queries and inject fake responses - NOW WITH IPv6"""
         try:
+            if packet.haslayer(DNS) and packet[DNS].qr == 0:
+                transport = "unknown"
+                src_ip = "unknown"
+
+                if packet.haslayer(IP):
+                    transport = "IPv4"
+                    src_ip = packet[IP].src
+                elif packet.haslayer(IPv6):
+                    transport = "IPv6"
+                    src_ip = packet[IPv6].src
+
+                logger.info(
+                    f"[DEBUG] Saw DNS query via {transport} from {src_ip}")
+
+                # Extra debug for IPv6
+                if packet.haslayer(IPv6):
+                    logger.info(
+                        f"[DEBUG] IPv6 src: {packet[IPv6].src} dst: {packet[IPv6].dst}")
+
             # Check if it's a DNS query (works for both IPv4 and IPv6)
             if (packet.haslayer(DNS) and
                 packet[DNS].qr == 0 and  # Query, not response

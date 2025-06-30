@@ -72,7 +72,7 @@ class NetworkScanner:
             if ip in hosts:
                 hosts[ip]['dns_queries'] = list(domains)
 
-        return self.prettify(hosts)
+        return list(hosts.values()) # changed from prettify
 
     def _scan_ipv4(self, ip_range):
         """ARP scan for IPv4 hosts"""

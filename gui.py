@@ -33,13 +33,8 @@ class FarfalleGUI:
         self.attack_thread = None
         self.is_running = False
         
-        # Setup logging capture
         self.setup_logging()
-        
-        # Create GUI components
         self.create_widgets()
-        
-        # Load network interfaces
         self.load_interfaces()
     
     def setup_logging(self):
@@ -49,8 +44,6 @@ class FarfalleGUI:
         self.log_handler.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
         self.log_handler.setFormatter(formatter)
-        
-        # Add to root logger
         logging.getLogger().addHandler(self.log_handler)
         
         # Also capture print statements by redirecting stdout
@@ -71,20 +64,16 @@ class FarfalleGUI:
         
     def create_widgets(self):
         """Create all GUI widgets"""
-        # Main container with padding
+        # Main container
         main_frame = ttk.Frame(self.root, padding="15")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
-        # Configure grid weights
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
         
-        # Banner and Title Section
         banner_frame = ttk.Frame(main_frame)
         banner_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 15))
-
-        # Add the butterfly art
         banner_display = self.create_banner_display(banner_frame)
         banner_display.pack(fill=tk.X)
 
@@ -115,13 +104,11 @@ class FarfalleGUI:
         # Network scan button for multiple targets
         scan_frame = ttk.Frame(config_frame)
         scan_frame.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10,0), pady=(10, 0))
-        
-        # Scan button
+    
         self.scan_btn = ttk.Button(scan_frame, text="🔍 Scan Network", 
                                    command=self.scan_network)
         self.scan_btn.pack(side=tk.LEFT)
         
-        # Scan results button
         self.scan_results_btn = ttk.Button(scan_frame, text = "📋 Show Hosts",
                                            command=self.show_scan_results, state="disabled")
         self.scan_results_btn.pack(side=tk.LEFT, padx=(10, 0))
@@ -129,12 +116,12 @@ class FarfalleGUI:
         # List to store discovered hosts
         self.discovered_hosts = []
 
-        # Attack Configuration Section
+        # Attack config
         attack_frame = ttk.LabelFrame(main_frame, text="Attack Configuration", padding="10")
         attack_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         attack_frame.columnconfigure(1, weight=1)
         
-        # Attack Mode Radio
+        # Attack modes
         ttk.Label(attack_frame, text="Attack Mode:").grid(row=0, column=0, sticky=tk.W, pady=5)
         self.mode_var = tk.StringVar(value="dns")  # Default to DNS for testing
         mode_frame = ttk.Frame(attack_frame)
@@ -145,7 +132,7 @@ class FarfalleGUI:
             ttk.Radiobutton(mode_frame, text=text, variable=self.mode_var, 
                            value=value).grid(row=0, column=i, padx=(0, 15))
         
-        # DNS Mapping with better input handling
+        # DNS mapping
         ttk.Label(attack_frame, text="DNS Mapping:").grid(row=1, column=0, sticky=tk.W, pady=5)
         dns_frame = ttk.Frame(attack_frame)
         dns_frame.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
@@ -160,7 +147,7 @@ class FarfalleGUI:
                                         command=self.set_host_ip_for_dns, width=12)
         self.use_host_ip_btn.grid(row=0, column=1, padx=(5, 0))
 
-        # Help text
+        # Help text to clarify
         dns_help = ttk.Label(attack_frame,
                             text="Domains to spoof (comma-separated). Leave empty for defaults.",
                             font=('Arial', 8), foreground='gray')
@@ -201,7 +188,7 @@ class FarfalleGUI:
         self.status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
-        # Log Output
+        # Log output
         log_frame = ttk.LabelFrame(main_frame, text="Output Log", padding="5")
         log_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         log_frame.columnconfigure(0, weight=1)
@@ -213,7 +200,6 @@ class FarfalleGUI:
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
     def create_banner_display(self, parent_frame):
-        """Create a compact banner layout"""
         # Main banner container
         banner_container = ttk.Frame(parent_frame)
         
@@ -282,7 +268,7 @@ class FarfalleGUI:
         return banner_container
 
     def load_interfaces(self):
-        """Load available network interfaces with IPv6 detection"""
+        """Load available network interfaces"""
         try:
             import psutil
             
@@ -337,7 +323,7 @@ class FarfalleGUI:
             self.log_message(f"Error setting host IP: {e}", "ERROR")
 
     def scan_network(self):
-        """Scan network for available hosts"""
+        """Scan network for hosts"""
         if not self.gateway_var.get():
             messagebox.showerror("Error", "Please enter gateway IP first")
             return
@@ -380,7 +366,7 @@ class FarfalleGUI:
         threading.Thread(target=scan_thread, daemon=True).start()
 
     def show_scan_results(self):
-        """Show discovered hosts in a popup"""
+        """Show discovered hosts"""
         if not self.discovered_hosts:
             messagebox.showinfo("Scan Results", "No hosts discovered yet. Run a network scan first.")
             return
@@ -397,7 +383,6 @@ class FarfalleGUI:
         ttk.Label(frame, text="Select targets (click to add to target field):", 
                 font=('Arial', 10, 'bold')).pack(anchor=tk.W, pady=(0, 10))
         
-        # Listbox with scrollbar
         list_frame = ttk.Frame(frame)
         list_frame.pack(fill=tk.BOTH, expand=True)
         
@@ -408,7 +393,6 @@ class FarfalleGUI:
         listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=listbox.yview)
     
-        # Populate listbox
         for host in self.discovered_hosts:
             listbox.insert(tk.END, f"{host['ip']:<15} - {host['mac']}")
         
@@ -433,6 +417,7 @@ class FarfalleGUI:
         ttk.Button(frame, text="Add Selected to Targets", 
               command=add_selected).pack(pady=(10, 0))
 
+    # TODO: Making this actually work 
     def check_ipv6_support(self):
         """Check if interface supports IPv6"""
         try:
@@ -463,7 +448,6 @@ class FarfalleGUI:
         
     def start_attack(self):
         """Start the attack"""
-        # Validate inputs
         if not self.interface_var.get():
             messagebox.showerror("Error", "Please enter network interface")
             return
@@ -474,7 +458,7 @@ class FarfalleGUI:
             messagebox.showerror("Error", "Please enter gateway IP")
             return
             
-        # Confirm attack
+        # Confirmation
         if not messagebox.askyesno("Confirm Attack", 
                                   f"Start {self.mode_var.get().upper()} attack?\n\n"):
             return
@@ -552,8 +536,8 @@ class FarfalleGUI:
         self.poisoner = None
         self.log_message("Attack stopped")
     
+    
     def clear_log(self):
-        """Clear the log"""
         self.log_text.delete(1.0, tk.END)
     
     def log_message(self, message, level="INFO"):
